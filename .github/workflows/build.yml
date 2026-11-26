@@ -77,6 +77,11 @@ on:
         required: true
         type: boolean
         default: false
+      use_perf_tuning:
+        description: "启用 保守性能调优 (BFQ/Kyber/Deadline + schedutil + fq_codel)"
+        required: false
+        type: boolean
+        default: false
       use_kpm:
         required: true
         type: boolean
@@ -122,8 +127,9 @@ jobs:
   build-kernel:
     name: "${{ inputs.kernel_version }}.${{ inputs.display_sub || inputs.sub_level }}-${{ inputs.android_version }}-${{ inputs.os_patch_level }}-${{ inputs.ksu_variant }}"
     runs-on: ubuntu-24.04
-    # repo sync 重试（3 x 20 分钟）+ 完整构建需要 60 分钟以上的余量
-    timeout-minutes: 90
+    # repo sync 重试（3 x 20 分钟）+ 完整构建需要 60 分钟以上的余量；
+    # 6.12 启用 ThinLTO 后编译时间明显增加，单独放宽到 120 分钟。
+    timeout-minutes: ${{ inputs.kernel_version == '6.12' && 120 || 90 }}
 
     env:
       CCACHE_COMPILERCHECK: "%compiler% -dumpmachine; %compiler% -dumpversion"
@@ -147,6 +153,7 @@ jobs:
           echo "ZRAM 压缩     : ${{ inputs.use_zram }}"
           echo "BBG 补丁      : ${{ inputs.use_bbg }}"
           echo "网络增强      : ${{ inputs.use_net_enhance }}"
+          echo "性能调优      : ${{ inputs.use_perf_tuning }}"
           echo "KPM 功能      : ${{ inputs.use_kpm && '开启' || '关闭' }}"
           echo "NoMount 元模块: ${{ inputs.use_nomount && '开启' || '关闭' }}"
           echo "Re-Kernel     : ${{ inputs.use_rekernel }}"
@@ -1461,7 +1468,8 @@ jobs:
             IP_SET_HASH_NETPORTNET IP_SET_HASH_NET IP_SET_HASH_NETNET \
             IP_SET_HASH_NETPORT IP_SET_HASH_NETIFACE IP_SET_LIST_SET \
             NETFILTER_XT_MATCH_ADDRTYPE NETFILTER_XT_SET NETFILTER_XT_TARGET_LOG \
-            NETFILTER_XT_MATCH_RECENT IP6_NF_NAT IP6_NF_TARGET_MASQUERADE \
+            NETFILTER_XT_MATCH_RECENT NETFILTER_XT_TARGET_HL NETFILTER_XT_MATCH_HL \
+            NETFILTER_ADVANCED NF_NAT IP6_NF_NAT IP6_NF_TARGET_MASQUERADE \
             IP_NF_TARGET_REJECT IP6_NF_TARGET_REJECT; do
             set_config "CONFIG_$cfg" y
           done
@@ -1469,6 +1477,16 @@ jobs:
           # 5.10 直接使用 defconfig 值可能未生效，在源码中补上相同上限。
           if [ "$KVER" = "5.10" ]; then
             sed -i 's/CONFIG_IP_SET_MAX/65534/g' net/netfilter/ipset/ip_set_core.c
+          fi
+
+          # nftables NAT：仅在 android16-6.12 启用，避免旧版本因 modules.bzl
+          # 模块清单差异引入额外的构建风险。NF_TABLES_INET 会同时选中
+          # NF_TABLES_IPV4/IPV6，NFT_NAT 依赖其中之一。
+          if [ "$AVER" = "android16" ] && [ "$KVER" = "6.12" ]; then
+            for cfg in NF_TABLES NF_TABLES_INET NF_TABLES_IPV4 NF_TABLES_IPV6 \
+              NFT_CT NFT_NAT NFT_MASQ NFT_REDIR; do
+              set_config "CONFIG_$cfg" y
+            done
           fi
 
           # TCP 拥塞控制算法：已打 BBRv3 补丁的版本默认 bbr3，其余默认 bbr
@@ -1486,7 +1504,8 @@ jobs:
           fi
 
           # 流量整形 Qdisc + 连接标记 + TTL/HopLimit + WireGuard
-          for cfg in NET_SCH_FQ NET_SCH_FQ_CODEL NET_SCH_CAKE NET_ACT_CONNMARK \
+          for cfg in NET_SCH_FQ NET_SCH_FQ_CODEL NET_SCH_CAKE \
+            NET_SCH_PIE NET_SCH_FQ_PIE NET_ACT_CONNMARK \
             IP_NF_TARGET_TTL IP6_NF_TARGET_HL IP6_NF_MATCH_HL WIREGUARD; do
             set_config "CONFIG_$cfg" y
           done
@@ -1516,6 +1535,14 @@ jobs:
           grep -q '^CONFIG_IP_SET=y$' "$DEFCONFIG" || net_fail "IPSet 配置写入校验失败"
           grep -q '^CONFIG_IP_SET_MAX=65534$' "$DEFCONFIG" || net_fail "IPSet 集合数上限配置写入校验失败"
           grep -q '^CONFIG_NET_SCH_FQ=y$' "$DEFCONFIG" || net_fail "FQ qdisc 配置写入校验失败"
+          grep -q '^CONFIG_NET_SCH_PIE=y$' "$DEFCONFIG" || net_fail "PIE qdisc 配置写入校验失败"
+          grep -q '^CONFIG_NET_SCH_FQ_PIE=y$' "$DEFCONFIG" || net_fail "FQ-PIE qdisc 配置写入校验失败"
+          grep -q '^CONFIG_NETFILTER_XT_TARGET_HL=y$' "$DEFCONFIG" || net_fail "xt HL target 配置写入校验失败"
+          grep -q '^CONFIG_NETFILTER_XT_MATCH_HL=y$' "$DEFCONFIG" || net_fail "xt HL match 配置写入校验失败"
+          grep -q '^CONFIG_NF_NAT=y$' "$DEFCONFIG" || net_fail "NF_NAT 配置写入校验失败"
+          if [ "$AVER" = "android16" ] && [ "$KVER" = "6.12" ]; then
+            grep -q '^CONFIG_NFT_NAT=y$' "$DEFCONFIG" || net_fail "nftables NAT 配置写入校验失败"
+          fi
           grep -q '^CONFIG_CIFS=y$' "$DEFCONFIG" || net_fail "CIFS 配置写入校验失败"
           if [ -n "$BBR3_PATCH" ]; then
             grep -q '^CONFIG_DEFAULT_TCP_CONG="bbr3"$' "$DEFCONFIG" || net_fail "BBRv3 默认拥塞控制配置写入校验失败"
@@ -1523,6 +1550,79 @@ jobs:
             grep -q '^CONFIG_DEFAULT_TCP_CONG="bbr"$' "$DEFCONFIG" || net_fail "BBR 默认拥塞控制配置写入校验失败"
           fi
           echo "[+] 网络增强配置完成"
+
+      - name: 应用保守性能调优
+        if: inputs.use_perf_tuning
+        working-directory: ${{ env.KERNEL_ROOT }}/common
+        run: |
+          set -euo pipefail
+          perf_fail() {
+            echo "::error::$1"
+            exit 1
+          }
+
+          set_config() {
+            local key="$1" value="$2"
+            if grep -q "^$key=" "$DEFCONFIG"; then
+              sed -i "s|^$key=.*|$key=$value|g" "$DEFCONFIG"
+            elif grep -q "^# $key is not set" "$DEFCONFIG"; then
+              sed -i "s|^# $key is not set|$key=$value|g" "$DEFCONFIG"
+            else
+              echo "$key=$value" >> "$DEFCONFIG"
+            fi
+          }
+
+          config_defined() {
+            local name="${1#CONFIG_}"
+            grep -RqsE --include='Kconfig*' "^[[:space:]]*(menuconfig|config)[[:space:]]+${name}$" .
+          }
+
+          echo "=== 应用保守性能调优（I/O 调度器 / schedutil / fq_codel）==="
+
+          # I/O 调度器：deadline/kyber 在 6.12 Kconfig 中默认 y，BFQ 需要显式开启。
+          for cfg in MQ_IOSCHED_DEADLINE MQ_IOSCHED_KYBER IOSCHED_BFQ; do
+            if config_defined "$cfg"; then
+              set_config "CONFIG_$cfg" y
+            else
+              echo "::warning::$cfg 在当前内核 Kconfig 中不存在，跳过"
+            fi
+          done
+          if config_defined BFQ_GROUP_IOSCHED; then
+            set_config CONFIG_BFQ_GROUP_IOSCHED y
+          fi
+
+          # schedutil：只保证调速器可用，不覆盖 MTK/EAS 厂商的默认调速器选择。
+          if config_defined CPU_FREQ_GOV_SCHEDUTIL; then
+            set_config CONFIG_CPU_FREQ_GOV_SCHEDUTIL y
+          fi
+
+          # 默认队列规则 fq_codel；CAKE 同时保留为可选 qdisc。
+          for cfg in NET_SCH_FQ_CODEL NET_SCH_CAKE; do
+            set_config "CONFIG_$cfg" y
+          done
+          if config_defined NET_SCH_DEFAULT && config_defined DEFAULT_FQ_CODEL; then
+            set_config CONFIG_NET_SCH_DEFAULT y
+            sed -i -E '/^CONFIG_DEFAULT_(PFIFO_FAST|FQ|CODEL|FQ_CODEL|FQ_PIE|SFQ)=y$/d' "$DEFCONFIG"
+            set_config CONFIG_DEFAULT_FQ_CODEL y
+          fi
+
+          # BBR 保持可用；不在此处覆盖网络增强选择的默认拥塞控制算法。
+          if config_defined TCP_CONG_BBR; then
+            set_config CONFIG_TCP_CONG_BBR y
+          fi
+
+          grep -q '^CONFIG_MQ_IOSCHED_DEADLINE=y$' "$DEFCONFIG" || perf_fail "MQ deadline 调度器配置写入校验失败"
+          grep -q '^CONFIG_MQ_IOSCHED_KYBER=y$' "$DEFCONFIG" || perf_fail "Kyber 调度器配置写入校验失败"
+          if config_defined IOSCHED_BFQ; then
+            grep -q '^CONFIG_IOSCHED_BFQ=y$' "$DEFCONFIG" || perf_fail "BFQ 调度器配置写入校验失败"
+          fi
+          if config_defined CPU_FREQ_GOV_SCHEDUTIL; then
+            grep -q '^CONFIG_CPU_FREQ_GOV_SCHEDUTIL=y$' "$DEFCONFIG" || perf_fail "schedutil 调速器配置写入校验失败"
+          fi
+          if config_defined NET_SCH_DEFAULT && config_defined DEFAULT_FQ_CODEL; then
+            grep -q '^CONFIG_DEFAULT_FQ_CODEL=y$' "$DEFCONFIG" || perf_fail "fq_codel 默认队列配置写入校验失败"
+          fi
+          echo "[+] 性能调优配置完成"
 
       - name: 应用 Re-Kernel
         if: inputs.use_rekernel
@@ -1672,6 +1772,37 @@ jobs:
 
           sed -i 's/check_defconfig//' ./common/build.config.gki
 
+      - name: 应用 Android 16 / 6.12 内核调优
+        if: inputs.android_version == 'android16' && inputs.kernel_version == '6.12'
+        working-directory: ${{ env.KERNEL_ROOT }}
+        run: |
+          set -euo pipefail
+          echo "应用 HZ=1000、NO_HZ_IDLE 与 O2 优化配置..."
+
+          # HZ 与 NO_HZ_IDLE 都是 choice 符号，先删除其它选项，避免 defconfig
+          # 中同时出现多个 choice 值导致 Kconfig 取错或产生覆盖警告。
+          sed -i -E '/^CONFIG_HZ_(100|250|300|1000)=y$/d' "$DEFCONFIG"
+          sed -i -E '/^# CONFIG_HZ_(100|250|300|1000) is not set$/d' "$DEFCONFIG"
+          sed -i -E '/^CONFIG_HZ=[0-9]+$/d' "$DEFCONFIG"
+          sed -i -E '/^CONFIG_NO_HZ_(IDLE|FULL|NONE)=y$/d' "$DEFCONFIG"
+          sed -i -E '/^# CONFIG_NO_HZ_(IDLE|FULL|NONE) is not set$/d' "$DEFCONFIG"
+          sed -i -E '/^CONFIG_NO_HZ=n$/d' "$DEFCONFIG"
+          sed -i -E '/^CONFIG_CC_OPTIMIZE_FOR_(PERFORMANCE|SIZE)=y$/d' "$DEFCONFIG"
+          sed -i -E '/^# CONFIG_CC_OPTIMIZE_FOR_(PERFORMANCE|SIZE) is not set$/d' "$DEFCONFIG"
+
+          cat >> "$DEFCONFIG" << 'EOF'
+          CONFIG_HZ_1000=y
+          CONFIG_HZ=1000
+          CONFIG_NO_HZ=y
+          CONFIG_NO_HZ_IDLE=y
+          CONFIG_CC_OPTIMIZE_FOR_PERFORMANCE=y
+          EOF
+
+          grep -q '^CONFIG_HZ_1000=y$' "$DEFCONFIG" || { echo "::error::HZ_1000 配置写入失败"; exit 1; }
+          grep -q '^CONFIG_HZ=1000$' "$DEFCONFIG" || { echo "::error::HZ=1000 配置写入失败"; exit 1; }
+          grep -q '^CONFIG_CC_OPTIMIZE_FOR_PERFORMANCE=y$' "$DEFCONFIG" || { echo "::error::O2 优化配置写入失败"; exit 1; }
+          echo "[+] HZ=1000 / NO_HZ_IDLE / O2 配置已写入"
+
       - name: 添加 SUSFS 配置
         if: inputs.enable_susfs
         run: |
@@ -1797,7 +1928,8 @@ jobs:
         uses: nick-fields/retry@v4
         with:
           shell: bash
-          timeout_minutes: 30
+          # 6.12 使用 ThinLTO 后单次编译时间明显增加，放宽单次超时。
+          timeout_minutes: ${{ inputs.kernel_version == '6.12' && 60 || 30 }}
           max_attempts: 3
           retry_on: timeout
           command: |
@@ -1845,9 +1977,9 @@ jobs:
                   FRAG_FLAG="--defconfig_fragment=//common:arch/arm64/configs/ksu.fragment"
                 fi
                 LTO_FLAG="--lto=thin"
-                # 6.12 及更新的 GKI 在 bazel 下固定 none
+                # 6.18 及更新的 GKI 仍固定 none；android16-6.12 按要求使用 ThinLTO。
                 KVER_NUM="${{ inputs.kernel_version }}"
-                if [ "$(printf '%s\n' "6.12" "$KVER_NUM" | sort -V | head -1)" = "6.12" ]; then
+                if [ "$(printf '%s\n' "6.18" "$KVER_NUM" | sort -V | head -1)" = "6.18" ]; then
                   LTO_FLAG="--lto=none"
                 fi
                 tools/bazel build --disk_cache=/home/runner/.cache/bazel --config=fast $LTO_FLAG $FRAG_FLAG //common:kernel_aarch64_dist || exit 1
@@ -1865,6 +1997,111 @@ jobs:
               echo "退出码: $BUILD_STATUS"
             } >> "$LOG_FILE"
             exit "$BUILD_STATUS"
+
+      - name: 校验最终内核配置
+        run: |
+          set -euo pipefail
+          ANDROID="${{ inputs.android_version }}"
+          KERNEL="${{ inputs.kernel_version }}"
+          CONFIG_CANDIDATES=(
+            "$KERNEL_ROOT/bazel-bin/common/kernel_aarch64/kernel_aarch64_dot_config"
+            "$KERNEL_ROOT/out/${ANDROID}-${KERNEL}/dist/kernel_aarch64_dot_config"
+            "$KERNEL_ROOT/out/${ANDROID}-${KERNEL}/dist/.config"
+            "$KERNEL_ROOT/bazel-bin/common/kernel_aarch64/.config"
+            "$KERNEL_ROOT/common/.config"
+          )
+          KCONFIG=""
+          for f in "${CONFIG_CANDIDATES[@]}"; do
+            if [ -f "$f" ] && grep -q '^CONFIG_HZ=' "$f"; then
+              KCONFIG="$f"
+              break
+            fi
+          done
+          if [ -z "$KCONFIG" ]; then
+            KCONFIG=$(find "$KERNEL_ROOT" -type f \( -name '*_dot_config' -o -name '.config' \) -size +10k \
+              -printf '%T@ %p\n' 2>/dev/null | sort -nr | head -n1 | cut -d' ' -f2- || true)
+          fi
+          if [ -z "$KCONFIG" ] || [ ! -f "$KCONFIG" ]; then
+            echo "::error::未找到最终 .config，无法校验内核配置"
+            exit 1
+          fi
+          echo "最终配置文件: $KCONFIG"
+
+          FAIL=0
+          require() {
+            local sym="$1" expected="${2:-y}" actual
+            actual=$(grep -E "^${sym}=" "$KCONFIG" | tail -n1 | cut -d= -f2- || true)
+            if [ "$expected" = "any" ]; then
+              if [ -z "$actual" ] || [ "$actual" = "n" ]; then
+                echo "::error::${sym} 未生效（实际: ${actual:-未设置}）"
+                FAIL=1
+              fi
+            elif [ "$actual" != "$expected" ]; then
+              echo "::error::${sym} 期望 ${expected}，实际 ${actual:-未设置}"
+              FAIL=1
+            fi
+          }
+
+          # 基础兼容配置（所有版本都应生效，工作流已无条件写入）
+          require CONFIG_TMPFS_XATTR y
+          require CONFIG_TMPFS_POSIX_ACL y
+
+          # Android 16 / 6.12 专项验证（其余版本保持各自 defconfig，
+          # 不强制 HZ/O2/LTO，也不要求该版本才有的 BPF/BTF 选项）
+          if [ "$ANDROID" = "android16" ] && [ "$KERNEL" = "6.12" ]; then
+            require CONFIG_BPF_SYSCALL y
+            require CONFIG_BPF_JIT y
+            require CONFIG_DEBUG_INFO_BTF y
+            require CONFIG_FUSE_BPF y
+            require CONFIG_HZ 1000
+            require CONFIG_HZ_1000 y
+            require CONFIG_NO_HZ_IDLE y
+            require CONFIG_CC_OPTIMIZE_FOR_PERFORMANCE y
+            require CONFIG_LTO_CLANG_THIN y
+          fi
+
+          # 网络增强项（启用时要求最终配置中生效，允许内建或模块）
+          if [ "${{ inputs.use_net_enhance }}" = "true" ]; then
+            for sym in \
+              CONFIG_IP_SET CONFIG_NETFILTER_XT_SET CONFIG_NF_NAT \
+              CONFIG_IP6_NF_NAT CONFIG_IP6_NF_TARGET_MASQUERADE \
+              CONFIG_NET_SCH_CAKE CONFIG_NET_SCH_PIE CONFIG_NET_SCH_FQ_PIE \
+              CONFIG_NETFILTER_XT_TARGET_HL CONFIG_NETFILTER_XT_MATCH_HL \
+              CONFIG_WIREGUARD; do
+              require "$sym" any
+            done
+            if [ "$ANDROID" = "android16" ] && [ "$KERNEL" = "6.12" ]; then
+              for sym in CONFIG_NF_TABLES CONFIG_NFT_NAT CONFIG_NFT_MASQ CONFIG_NFT_REDIR; do
+                require "$sym" any
+              done
+            fi
+          fi
+
+          # 可选性能调优项
+          if [ "${{ inputs.use_perf_tuning }}" = "true" ]; then
+            for sym in \
+              CONFIG_MQ_IOSCHED_DEADLINE CONFIG_MQ_IOSCHED_KYBER \
+              CONFIG_IOSCHED_BFQ CONFIG_CPU_FREQ_GOV_SCHEDUTIL \
+              CONFIG_DEFAULT_FQ_CODEL; do
+              require "$sym" any
+            done
+          fi
+
+          # 已在 GKI defconfig 中默认启用的项：未生效时给出警告，不阻断构建
+          for sym in \
+            CONFIG_LRU_GEN CONFIG_LRU_GEN_ENABLED \
+            CONFIG_ZRAM_BACKEND_LZ4 CONFIG_ZRAM_BACKEND_ZSTD \
+            CONFIG_TCP_CONG_BBR CONFIG_NET_SCH_FQ_CODEL; do
+            if ! grep -q "^${sym}=" "$KCONFIG"; then
+              echo "::warning::${sym} 未出现在最终 .config（可能由依赖或模块化决定）"
+            fi
+          done
+
+          if [ "$FAIL" -ne 0 ]; then
+            echo "::error::最终 .config 校验失败，请检查上方缺失项"
+            exit 1
+          fi
+          echo "[+] 最终 .config 校验通过"
 
       - name: 整理编译失败日志
         if: ${{ always() && steps.compile_kernel.outcome == 'failure' }}

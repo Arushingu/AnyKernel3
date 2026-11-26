@@ -78,6 +78,11 @@ on:
         required: true
         type: boolean
         default: false
+      use_perf_tuning:
+        description: "启用 保守性能调优 (BFQ/Kyber/Deadline + schedutil + fq_codel)"
+        required: false
+        type: boolean
+        default: false
       use_rekernel:
         description: "启用 Re-Kernel 驱动"
         required: false
@@ -120,6 +125,10 @@ on:
         type: boolean
       use_net_enhance:
         required: true
+        type: boolean
+        default: false
+      use_perf_tuning:
+        required: false
         type: boolean
         default: false
       use_kpm:
@@ -225,6 +234,7 @@ jobs:
       use_zram: false
       use_bbg: ${{ inputs.use_bbg }}
       use_net_enhance: ${{ inputs.use_net_enhance }}
+      use_perf_tuning: ${{ inputs.use_perf_tuning || false }}
       use_kpm: ${{ inputs.use_kpm || false }}
       use_rekernel: ${{ inputs.use_rekernel || false }}
       use_nomount: ${{ inputs.use_nomount || false }}

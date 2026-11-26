@@ -108,6 +108,10 @@ on:
         description: "启用 网络增强 (BBRv3 + IPSet + Qdisc + CIFS)"
         type: boolean
         default: false
+      use_perf_tuning:
+        description: "启用 保守性能调优（仅 Android 16 - 6.12：BFQ/Kyber/Deadline + schedutil + fq_codel）"
+        type: boolean
+        default: false
       use_rekernel:
         description: "启用 Re-Kernel 驱动"
         type: boolean
@@ -367,6 +371,7 @@ jobs:
       build_time: ${{ inputs.build_time || '' }}
       use_bbg: ${{ inputs.use_bbg }}
       use_net_enhance: ${{ inputs.use_net_enhance }}
+      use_perf_tuning: ${{ inputs.use_perf_tuning || false }}
       use_kpm: ${{ inputs.use_kpm }}
       use_rekernel: ${{ inputs.use_rekernel }}
       use_nomount: ${{ inputs.use_nomount }}
