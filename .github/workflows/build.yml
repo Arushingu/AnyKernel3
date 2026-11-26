@@ -1772,36 +1772,25 @@ jobs:
 
           sed -i 's/check_defconfig//' ./common/build.config.gki
 
-      - name: 应用 Android 16 / 6.12 内核调优
+      - name: 设置内核定时器频率 (HZ=1000)
         if: inputs.android_version == 'android16' && inputs.kernel_version == '6.12'
         working-directory: ${{ env.KERNEL_ROOT }}
         run: |
           set -euo pipefail
-          echo "应用 HZ=1000、NO_HZ_IDLE 与 O2 优化配置..."
 
-          # HZ 与 NO_HZ_IDLE 都是 choice 符号，先删除其它选项，避免 defconfig
-          # 中同时出现多个 choice 值导致 Kconfig 取错或产生覆盖警告。
-          sed -i -E '/^CONFIG_HZ_(100|250|300|1000)=y$/d' "$DEFCONFIG"
-          sed -i -E '/^# CONFIG_HZ_(100|250|300|1000) is not set$/d' "$DEFCONFIG"
-          sed -i -E '/^CONFIG_HZ=[0-9]+$/d' "$DEFCONFIG"
-          sed -i -E '/^CONFIG_NO_HZ_(IDLE|FULL|NONE)=y$/d' "$DEFCONFIG"
-          sed -i -E '/^# CONFIG_NO_HZ_(IDLE|FULL|NONE) is not set$/d' "$DEFCONFIG"
-          sed -i -E '/^CONFIG_NO_HZ=n$/d' "$DEFCONFIG"
-          sed -i -E '/^CONFIG_CC_OPTIMIZE_FOR_(PERFORMANCE|SIZE)=y$/d' "$DEFCONFIG"
-          sed -i -E '/^# CONFIG_CC_OPTIMIZE_FOR_(PERFORMANCE|SIZE) is not set$/d' "$DEFCONFIG"
+          # GKI 6.12 的 gki_defconfig 不含任何 CONFIG_HZ_*，Kconfig.hz 默认 HZ_250。
+          # 只需追加 HZ_1000=y；CONFIG_HZ=1000 由 Kconfig 自动推导，无需手写。
+          # NO_HZ_IDLE 与 CC_OPTIMIZE_FOR_PERFORMANCE 也已是默认值，不重复写入。
+          if grep -q '^CONFIG_HZ_1000=y$' "$DEFCONFIG"; then
+            echo "CONFIG_HZ_1000=y 已存在，跳过"
+          elif grep -q '^# CONFIG_HZ_1000 is not set$' "$DEFCONFIG"; then
+            sed -i 's/^# CONFIG_HZ_1000 is not set$/CONFIG_HZ_1000=y/' "$DEFCONFIG"
+          else
+            echo 'CONFIG_HZ_1000=y' >> "$DEFCONFIG"
+          fi
 
-          cat >> "$DEFCONFIG" << 'EOF'
-          CONFIG_HZ_1000=y
-          CONFIG_HZ=1000
-          CONFIG_NO_HZ=y
-          CONFIG_NO_HZ_IDLE=y
-          CONFIG_CC_OPTIMIZE_FOR_PERFORMANCE=y
-          EOF
-
-          grep -q '^CONFIG_HZ_1000=y$' "$DEFCONFIG" || { echo "::error::HZ_1000 配置写入失败"; exit 1; }
-          grep -q '^CONFIG_HZ=1000$' "$DEFCONFIG" || { echo "::error::HZ=1000 配置写入失败"; exit 1; }
-          grep -q '^CONFIG_CC_OPTIMIZE_FOR_PERFORMANCE=y$' "$DEFCONFIG" || { echo "::error::O2 优化配置写入失败"; exit 1; }
-          echo "[+] HZ=1000 / NO_HZ_IDLE / O2 配置已写入"
+          grep -q '^CONFIG_HZ_1000=y$' "$DEFCONFIG" || { echo "::error::CONFIG_HZ_1000 写入失败"; exit 1; }
+          echo "[+] 已写入 CONFIG_HZ_1000=y（CONFIG_HZ 由 Kconfig 推导为 1000）"
 
       - name: 添加 SUSFS 配置
         if: inputs.enable_susfs
