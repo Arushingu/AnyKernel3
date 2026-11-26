@@ -1479,16 +1479,9 @@ jobs:
             sed -i 's/CONFIG_IP_SET_MAX/65534/g' net/netfilter/ipset/ip_set_core.c
           fi
 
-          # nftables NAT：仅在 android16-6.12 启用，避免旧版本因 modules.bzl
-          # 模块清单差异引入额外的构建风险。NF_TABLES_INET 会同时选中
-          # NF_TABLES_IPV4/IPV6，NFT_NAT 依赖其中之一。
-          if [ "$AVER" = "android16" ] && [ "$KVER" = "6.12" ]; then
-            for cfg in NF_TABLES NF_TABLES_INET NF_TABLES_IPV4 NF_TABLES_IPV6 \
-              NFT_CT NFT_NAT NFT_MASQ NFT_REDIR; do
-              set_config "CONFIG_$cfg" y
-            done
-          fi
-
+          # 注意：不内置 nftables (NF_TABLES*/NFT_*)。IPv6 NAT 已由
+          # IP6_NF_NAT + IP6_NF_TARGET_MASQUERADE 覆盖；内置整套 nftables
+          # 会显著改变内核 netfilter 行为，曾与厂商栈冲突导致 bootloop。
           # TCP 拥塞控制算法：已打 BBRv3 补丁的版本默认 bbr3，其余默认 bbr
           for cfg in TCP_CONG_ADVANCED TCP_CONG_BBR TCP_CONG_CUBIC \
             TCP_CONG_BIC TCP_CONG_WESTWOOD TCP_CONG_HTCP; do
@@ -1540,9 +1533,6 @@ jobs:
           grep -q '^CONFIG_NETFILTER_XT_TARGET_HL=y$' "$DEFCONFIG" || net_fail "xt HL target 配置写入校验失败"
           grep -q '^CONFIG_NETFILTER_XT_MATCH_HL=y$' "$DEFCONFIG" || net_fail "xt HL match 配置写入校验失败"
           grep -q '^CONFIG_NF_NAT=y$' "$DEFCONFIG" || net_fail "NF_NAT 配置写入校验失败"
-          if [ "$AVER" = "android16" ] && [ "$KVER" = "6.12" ]; then
-            grep -q '^CONFIG_NFT_NAT=y$' "$DEFCONFIG" || net_fail "nftables NAT 配置写入校验失败"
-          fi
           grep -q '^CONFIG_CIFS=y$' "$DEFCONFIG" || net_fail "CIFS 配置写入校验失败"
           if [ -n "$BBR3_PATCH" ]; then
             grep -q '^CONFIG_DEFAULT_TCP_CONG="bbr3"$' "$DEFCONFIG" || net_fail "BBRv3 默认拥塞控制配置写入校验失败"
@@ -1596,15 +1586,11 @@ jobs:
             set_config CONFIG_CPU_FREQ_GOV_SCHEDUTIL y
           fi
 
-          # 默认队列规则 fq_codel；CAKE 同时保留为可选 qdisc。
+          # fq_codel / CAKE 只作为可选 qdisc；不覆盖系统默认队列规则
+          # （NET_SCH_DEFAULT/DEFAULT_FQ_CODEL 会改变所有接口的默认行为，已移除）。
           for cfg in NET_SCH_FQ_CODEL NET_SCH_CAKE; do
             set_config "CONFIG_$cfg" y
           done
-          if config_defined NET_SCH_DEFAULT && config_defined DEFAULT_FQ_CODEL; then
-            set_config CONFIG_NET_SCH_DEFAULT y
-            sed -i -E '/^CONFIG_DEFAULT_(PFIFO_FAST|FQ|CODEL|FQ_CODEL|FQ_PIE|SFQ)=y$/d' "$DEFCONFIG"
-            set_config CONFIG_DEFAULT_FQ_CODEL y
-          fi
 
           # BBR 保持可用；不在此处覆盖网络增强选择的默认拥塞控制算法。
           if config_defined TCP_CONG_BBR; then
@@ -1618,9 +1604,6 @@ jobs:
           fi
           if config_defined CPU_FREQ_GOV_SCHEDUTIL; then
             grep -q '^CONFIG_CPU_FREQ_GOV_SCHEDUTIL=y$' "$DEFCONFIG" || perf_fail "schedutil 调速器配置写入校验失败"
-          fi
-          if config_defined NET_SCH_DEFAULT && config_defined DEFAULT_FQ_CODEL; then
-            grep -q '^CONFIG_DEFAULT_FQ_CODEL=y$' "$DEFCONFIG" || perf_fail "fq_codel 默认队列配置写入校验失败"
           fi
           echo "[+] 性能调优配置完成"
 
@@ -2062,19 +2045,13 @@ jobs:
               CONFIG_WIREGUARD; do
               require "$sym" any
             done
-            if [ "$ANDROID" = "android16" ] && [ "$KERNEL" = "6.12" ]; then
-              for sym in CONFIG_NF_TABLES CONFIG_NFT_NAT CONFIG_NFT_MASQ CONFIG_NFT_REDIR; do
-                require "$sym" any
-              done
-            fi
           fi
 
           # 可选性能调优项
           if [ "${{ inputs.use_perf_tuning }}" = "true" ]; then
             for sym in \
               CONFIG_MQ_IOSCHED_DEADLINE CONFIG_MQ_IOSCHED_KYBER \
-              CONFIG_IOSCHED_BFQ CONFIG_CPU_FREQ_GOV_SCHEDUTIL \
-              CONFIG_DEFAULT_FQ_CODEL; do
+              CONFIG_IOSCHED_BFQ CONFIG_CPU_FREQ_GOV_SCHEDUTIL; do
               require "$sym" any
             done
           fi
