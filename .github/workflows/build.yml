@@ -128,7 +128,7 @@ jobs:
     name: "${{ inputs.kernel_version }}.${{ inputs.display_sub || inputs.sub_level }}-${{ inputs.android_version }}-${{ inputs.os_patch_level }}-${{ inputs.ksu_variant }}"
     runs-on: ubuntu-24.04
     # repo sync 重试（3 x 20 分钟）+ 完整构建需要 60 分钟以上的余量；
-    # 6.12 启用 ThinLTO 后编译时间明显增加，单独放宽到 120 分钟。
+    # 6.12 全量编译较慢，单独放宽到 120 分钟。
     timeout-minutes: ${{ inputs.kernel_version == '6.12' && 120 || 90 }}
 
     env:
@@ -1928,7 +1928,7 @@ jobs:
         uses: nick-fields/retry@v4
         with:
           shell: bash
-          # 6.12 使用 ThinLTO 后单次编译时间明显增加，放宽单次超时。
+          # 6.12 编译耗时较长，放宽单次超时。
           timeout_minutes: ${{ inputs.kernel_version == '6.12' && 60 || 30 }}
           max_attempts: 3
           retry_on: timeout
@@ -1977,9 +1977,11 @@ jobs:
                   FRAG_FLAG="--defconfig_fragment=//common:arch/arm64/configs/ksu.fragment"
                 fi
                 LTO_FLAG="--lto=thin"
-                # 6.18 及更新的 GKI 仍固定 none；android16-6.12 按要求使用 ThinLTO。
+                # 6.12 的 GKI dist 依赖 rust_binder.ko；实测 --lto=thin 会让
+                # //common:kernel_aarch64_dist 在 staging 目录中找不到该模块，
+                # 因此 6.12+ 继续固定 none（与上游默认一致），避免构建失败。
                 KVER_NUM="${{ inputs.kernel_version }}"
-                if [ "$(printf '%s\n' "6.18" "$KVER_NUM" | sort -V | head -1)" = "6.18" ]; then
+                if [ "$(printf '%s\n' "6.12" "$KVER_NUM" | sort -V | head -1)" = "6.12" ]; then
                   LTO_FLAG="--lto=none"
                 fi
                 tools/bazel build --disk_cache=/home/runner/.cache/bazel --config=fast $LTO_FLAG $FRAG_FLAG //common:kernel_aarch64_dist || exit 1
@@ -2057,7 +2059,8 @@ jobs:
             require CONFIG_HZ_1000 y
             require CONFIG_NO_HZ_IDLE y
             require CONFIG_CC_OPTIMIZE_FOR_PERFORMANCE y
-            require CONFIG_LTO_CLANG_THIN y
+            # ThinLTO 在 6.12 GKI dist 下会因缺少 rust_binder.ko 而失败，已回退 none
+            require CONFIG_LTO_NONE y
           fi
 
           # 网络增强项（启用时要求最终配置中生效，允许内建或模块）
