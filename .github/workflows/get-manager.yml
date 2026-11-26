@@ -180,7 +180,8 @@ jobs:
       # 正式：管理器取官方「正式版」Release（prerelease=false，标签提交 + 该 Release 的 APK）；
       #       上游没有正式版 Release 时（如 BakaSU 只有 rc 预发布），
       #       改用官方默认分支最新上传构建，内核仍锁定该构建提交
-      # 最新：SukiSU-Nova 取新上游的 manager-ci Release，按 APK 版本对齐 main 提交；
+      # 最新：SukiSU-Nova 取 CNB sukisu-nova/Release 的 manager-ci manifest，按 APK 版本对齐 main 提交；
+      #       正式版取 GitHub SukiSU-Nova/SukiSU-Nova 稳定 Release（旧 shirkneko/sukisu-release 已冻结）
       #       BakaSU/FinaSU 取 build-manager.yml 最新构建，内核锁定该构建提交
       - name: 选择管理器来源（构建通道）
         id: channel
