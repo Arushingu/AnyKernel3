@@ -440,7 +440,7 @@ jobs:
           fi
 
       - name: 上传汇总冲突文件
-        uses: actions/upload-artifact@v6
+        uses: actions/upload-artifact@v7
         with:
           name: AIO-REJ
           path: AIO-REJ.zip
@@ -497,7 +497,7 @@ jobs:
 
       - name: 上传汇总编译失败日志
         id: upload_aggregated_build_logs
-        uses: actions/upload-artifact@v6
+        uses: actions/upload-artifact@v7
         with:
           name: AIO-BUILD-LOGS
           path: AIO-BUILD-LOGS.zip

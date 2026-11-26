@@ -157,7 +157,7 @@ jobs:
           echo "========================================"
 
       - name: 清理磁盘空间
-        uses: endersonmenezes/free-disk-space@v3
+        uses: endersonmenezes/free-disk-space@v4
         with:
           remove_android: true
           remove_dotnet: true
@@ -168,7 +168,7 @@ jobs:
           remove_packages_one_command: true
           remove_folders: "/usr/share/swift /usr/share/miniconda /usr/share/az* /usr/local/lib/node_modules /usr/local/share/chromium /usr/local/share/powershell /usr/local/julia /usr/local/aws-cli /usr/local/aws-sam-cli /usr/share/gradle"
           rm_cmd: "rmz"
-          rmz_version: "3.1.1"
+          rmz_version: "3.2.1"
           testing: false
 
       - name: 检出代码仓库
@@ -224,7 +224,7 @@ jobs:
           echo "CCACHE_DIR=$HOME/.ccache" >> $GITHUB_ENV
 
       - name: 恢复 ccache 缓存
-        uses: actions/cache@v5
+        uses: actions/cache@v6
         with:
           path: ~/.ccache
           key: ${{ inputs.android_version }}-${{ inputs.kernel_version }}-${{ inputs.sub_level }}-ccache-${{ github.sha }}
@@ -234,7 +234,7 @@ jobs:
       # 仅 6.1+ 走 bazel 构建，持久化 --disk_cache 目录以加速后续构建
       - name: 恢复 bazel 磁盘缓存
         if: inputs.android_version != 'android12' && inputs.android_version != 'android13'
-        uses: actions/cache@v5
+        uses: actions/cache@v6
         with:
           path: ~/.cache/bazel
           key: ${{ inputs.android_version }}-${{ inputs.kernel_version }}-${{ inputs.sub_level }}-bazel-${{ github.sha }}
@@ -244,7 +244,7 @@ jobs:
           
       - name: 缓存工具链
         id: cache-toolchain
-        uses: actions/cache@v5
+        uses: actions/cache@v6
         with:
           path: |
             kernel-build-tools
@@ -1896,7 +1896,7 @@ jobs:
 
       - name: 上传编译失败日志
         if: ${{ always() && steps.compile_kernel.outcome == 'failure' }}
-        uses: actions/upload-artifact@v6
+        uses: actions/upload-artifact@v7
         with:
           name: ${{ inputs.ksu_variant }}_kernel-${{ env.CONFIG }}-Build-Logs
           path: build-logs/
@@ -2012,7 +2012,7 @@ jobs:
 
       - name: 上传 AnyKernel3 刷入包
         if: inputs.artifact_upload_mode != '上传全部'
-        uses: actions/upload-artifact@v6
+        uses: actions/upload-artifact@v7
         with:
           name: ${{ env.AK3_NAME }}-AnyKernel3
           path: "AnyKernel3-package/*"
@@ -2021,7 +2021,7 @@ jobs:
 
       - name: 上传全部构建产物
         if: inputs.artifact_upload_mode == '上传全部'
-        uses: actions/upload-artifact@v6
+        uses: actions/upload-artifact@v7
         with:
           name: ${{ env.AK3_NAME }}-AnyKernel3
           path: |
@@ -2031,7 +2031,7 @@ jobs:
 
       - name: 上传补丁冲突文件
         if: always() && env.REJ_COUNT > 0
-        uses: actions/upload-artifact@v6
+        uses: actions/upload-artifact@v7
         with:
           name: ${{ inputs.ksu_variant }}_kernel-${{ env.CONFIG }}-Rejects
           path: patch-rejects/
