@@ -13,7 +13,8 @@
 # ================================================================
 
 # 是否启用自定义提交 (true/false)
-custom=false
+# 留空的分支仍会跟随上游默认分支最新提交（构建脚本仅在值非空时 checkout）。
+custom=true
 
 # ==================== SUSFS 各分支的 commit hash ====================
 # 仅当 custom=true 时生效
@@ -23,9 +24,13 @@ gki-android13-5.15=
 gki-android14-5.15=
 gki-android14-6.1=
 gki-android15-6.6=
-gki-android16-6.12=
+# gki-android16-6.12：SUSFS v2.4.0，gitlab 分支 gki-android16-6.12 HEAD
+# （2026-11-15，已验证适配 Android 16 / 6.12）
+gki-android16-6.12=9b0b13f069673b9b07b713a5c66977de4d62b175
 # gki-android17-6.18：上游暂无该 SUSFS 分支，android17-6.18 固定禁用 SUSFS
 
 # ==================== SukiSU-Nova 的 commit hash ====================
 # 仅当 custom=true 且使用 SukiSU-Nova 变体时生效
-sukisu=
+# builtin 分支 HEAD（含树内 SUSFS 支持），源：
+# https://git.zako.shirkneko.top:20004/shirkneko/SukiSU
+sukisu=adf6e86d55229ad78a5f7758bdc43d92fd1c3729
