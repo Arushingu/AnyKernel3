@@ -1,0 +1,29 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+Subject: [PATCH] mm/shmem: default shmem/tmpfs THP policy to advise
+
+GKI 6.12 already enables CONFIG_TRANSPARENT_HUGEPAGE_MADVISE. This patch
+sets the shmem/tmpfs default to SHMEM_HUGE_ADVISE and makes new tmpfs
+mounts inherit that default, so hugepages are only used after an explicit
+madvise(MADV_HUGEPAGE) hint.
+
+--- a/mm/shmem.c
++++ b/mm/shmem.c
+@@ -551,7 +551,7 @@
+ #ifdef CONFIG_TRANSPARENT_HUGEPAGE
+ /* ifdef here to avoid bloating shmem.o when not necessary */
+ 
+-static int shmem_huge __read_mostly = SHMEM_HUGE_NEVER;
++static int shmem_huge __read_mostly = SHMEM_HUGE_ADVISE;
+ 
+ static bool __shmem_huge_global_enabled(struct inode *inode, pgoff_t index,
+ 					loff_t write_end, bool shmem_huge_force,
+@@ -4970,6 +4970,9 @@
+ 	ctx->mode = 0777 | S_ISVTX;
+ 	ctx->uid = current_fsuid();
+ 	ctx->gid = current_fsgid();
++#ifdef CONFIG_TRANSPARENT_HUGEPAGE
++	ctx->huge = shmem_huge;
++#endif
+ 
+ 	fc->fs_private = ctx;
+ 	fc->ops = &shmem_fs_context_ops;

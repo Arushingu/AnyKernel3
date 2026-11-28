@@ -1,0 +1,40 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+Subject: [PATCH] block: use BFQ for SQ and mq-deadline for MQ devices
+
+Adapted from CachyOS commit 9797ab73854b6019085cd43706cf985ad7cd8b36
+("CACHY: Use BFQ for SQ devices and mq-deadline for MQ devices") for the
+GKI 6.12 elevator_get_default() implementation. Applied after the ADIOS
+patch so the CONFIG_MQ_IOSCHED_DEFAULT_ADIOS branch is kept intact.
+
+--- a/block/elevator.c
++++ b/block/elevator.c
+@@ -561,6 +561,8 @@
+  */
+ static struct elevator_type *elevator_get_default(struct request_queue *q)
+ {
++	struct elevator_type *e;
++
+ 	if (q->tag_set->flags & BLK_MQ_F_NO_SCHED_BY_DEFAULT)
+ 		return NULL;
+ 
+@@ -569,10 +571,17 @@
+ #else // !CONFIG_MQ_IOSCHED_DEFAULT_ADIOS
+ 
+ 	if (q->nr_hw_queues != 1 &&
+-	    !blk_mq_is_shared_tags(q->tag_set->flags))
+-		return NULL;
++	    !blk_mq_is_shared_tags(q->tag_set->flags)) {
++		e = elevator_find_get("mq-deadline");
++		if (!e)
++			e = elevator_find_get("bfq");
++		return e;
++	}
+ 
+-	return elevator_find_get("mq-deadline");
++	e = elevator_find_get("bfq");
++	if (!e)
++		e = elevator_find_get("mq-deadline");
++	return e;
+ #endif // !CONFIG_MQ_IOSCHED_DEFAULT_ADIOS
+ }
+ 
