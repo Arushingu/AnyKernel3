@@ -83,6 +83,26 @@ on:
         required: false
         type: boolean
         default: false
+      use_bore:
+        description: "启用 BORE 7.0.0 CPU 调度器（仅 6.12.38-2025-09）"
+        required: false
+        type: boolean
+        default: false
+      use_adios:
+        description: "启用 ADIOS 3.2.0 I/O 调度器 + BFQ(SQ)/mq-deadline(MQ) 默认选择（仅 6.12.38-2025-09）"
+        required: false
+        type: boolean
+        default: false
+      use_lifo_accept:
+        description: "启用 accept() LIFO 唤醒顺序（仅 6.12.38-2025-09）"
+        required: false
+        type: boolean
+        default: false
+      use_thp_advise:
+        description: "启用 shmem/tmpfs THP ADVISE 默认（仅 6.12.38-2025-09）"
+        required: false
+        type: boolean
+        default: false
       use_rekernel:
         description: "启用 Re-Kernel 驱动"
         required: false
@@ -128,6 +148,22 @@ on:
         type: boolean
         default: false
       use_perf_tuning:
+        required: false
+        type: boolean
+        default: false
+      use_bore:
+        required: false
+        type: boolean
+        default: false
+      use_adios:
+        required: false
+        type: boolean
+        default: false
+      use_lifo_accept:
+        required: false
+        type: boolean
+        default: false
+      use_thp_advise:
         required: false
         type: boolean
         default: false
@@ -235,6 +271,10 @@ jobs:
       use_bbg: ${{ inputs.use_bbg }}
       use_net_enhance: ${{ inputs.use_net_enhance }}
       use_perf_tuning: ${{ inputs.use_perf_tuning || false }}
+      use_bore: ${{ inputs.use_bore || false }}
+      use_adios: ${{ inputs.use_adios || false }}
+      use_lifo_accept: ${{ inputs.use_lifo_accept || false }}
+      use_thp_advise: ${{ inputs.use_thp_advise || false }}
       use_kpm: ${{ inputs.use_kpm || false }}
       use_rekernel: ${{ inputs.use_rekernel || false }}
       use_nomount: ${{ inputs.use_nomount || false }}

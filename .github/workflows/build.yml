@@ -82,6 +82,26 @@ on:
         required: false
         type: boolean
         default: false
+      use_bore:
+        description: "启用 BORE 7.0.0 CPU 调度器（仅 6.12.38-2025-09）"
+        required: false
+        type: boolean
+        default: false
+      use_adios:
+        description: "启用 ADIOS 3.2.0 I/O 调度器 + BFQ(SQ)/mq-deadline(MQ) 默认选择（仅 6.12.38-2025-09）"
+        required: false
+        type: boolean
+        default: false
+      use_lifo_accept:
+        description: "启用 accept() LIFO 唤醒顺序（仅 6.12.38-2025-09）"
+        required: false
+        type: boolean
+        default: false
+      use_thp_advise:
+        description: "启用 shmem/tmpfs THP ADVISE 默认（仅 6.12.38-2025-09）"
+        required: false
+        type: boolean
+        default: false
       use_kpm:
         required: true
         type: boolean
@@ -154,6 +174,10 @@ jobs:
           echo "BBG 补丁      : ${{ inputs.use_bbg }}"
           echo "网络增强      : ${{ inputs.use_net_enhance }}"
           echo "性能调优      : ${{ inputs.use_perf_tuning }}"
+          echo "BORE 调度器   : ${{ inputs.use_bore && '开启' || '关闭' }}"
+          echo "ADIOS + I/O   : ${{ inputs.use_adios && '开启' || '关闭' }}"
+          echo "LIFO accept   : ${{ inputs.use_lifo_accept && '开启' || '关闭' }}"
+          echo "THP ADVISE    : ${{ inputs.use_thp_advise && '开启' || '关闭' }}"
           echo "KPM 功能      : ${{ inputs.use_kpm && '开启' || '关闭' }}"
           echo "NoMount 元模块: ${{ inputs.use_nomount && '开启' || '关闭' }}"
           echo "Re-Kernel     : ${{ inputs.use_rekernel }}"
@@ -215,6 +239,17 @@ jobs:
           if [ -f "$CONFIG_FILE" ]; then
             echo "加载配置文件: $CONFIG_FILE"
             cat "$CONFIG_FILE"
+          fi
+
+      - name: 校验可选调度器补丁的版本适配
+        if: inputs.use_bore || inputs.use_adios || inputs.use_lifo_accept || inputs.use_thp_advise
+        run: |
+          TARGET="android16-6.12-38-2025-09"
+          CURRENT="${{ inputs.android_version }}-${{ inputs.kernel_version }}-${{ inputs.sub_level }}-${{ inputs.os_patch_level }}"
+          if [ "$CURRENT" != "$TARGET" ]; then
+            echo "::warning::BORE/ADIOS/LIFO/THP 补丁仅在 $TARGET 验证过；当前 $CURRENT 将跳过这些补丁"
+          else
+            echo "[+] 当前内核版本与目标版本一致：$CURRENT"
           fi
 
       - name: 安装编译依赖
@@ -1607,6 +1642,151 @@ jobs:
           fi
           echo "[+] 性能调优配置完成"
 
+      - name: 应用 BORE 调度器
+        if: inputs.use_bore && inputs.android_version == 'android16' && inputs.kernel_version == '6.12' && inputs.sub_level == '38' && inputs.os_patch_level == '2025-09'
+        working-directory: ${{ env.KERNEL_ROOT }}/common
+        run: |
+          set -euo pipefail
+          bore_fail() {
+            echo "::error::$1"
+            exit 1
+          }
+          set_config() {
+            local key="$1" value="$2"
+            if grep -q "^$key=" "$DEFCONFIG"; then
+              sed -i "s|^$key=.*|$key=$value|g" "$DEFCONFIG"
+            elif grep -q "^# $key is not set" "$DEFCONFIG"; then
+              sed -i "s|^# $key is not set|$key=$value|g" "$DEFCONFIG"
+            else
+              echo "$key=$value" >> "$DEFCONFIG"
+            fi
+          }
+
+          PATCH_FILE="$ZZH_PATCHES/patches/bore-7.0.0-gki-6.12.patch"
+          [ -f "$PATCH_FILE" ] || bore_fail "BORE 补丁不存在：$PATCH_FILE"
+
+          echo "=== 应用 BORE 7.0.0 (GKI KMI-preserving) ==="
+          if patch -p1 --dry-run --forward < "$PATCH_FILE" >/dev/null 2>&1; then
+            patch -p1 --no-backup-if-mismatch < "$PATCH_FILE"
+          elif grep -q '^config SCHED_BORE' init/Kconfig && [ -f kernel/sched/bore.c ]; then
+            echo "[*] BORE 补丁此前已应用，跳过"
+          else
+            bore_fail "BORE 补丁应用失败"
+          fi
+
+          grep -q '^config SCHED_BORE' init/Kconfig || bore_fail "BORE Kconfig 缺失"
+          [ -f kernel/sched/bore.c ] || bore_fail "BORE 源文件 kernel/sched/bore.c 缺失"
+          set_config CONFIG_SCHED_BORE y
+          grep -q '^CONFIG_SCHED_BORE=y$' "$DEFCONFIG" || bore_fail "BORE 配置写入校验失败"
+          echo "[+] BORE 7.0.0 已应用"
+
+      - name: 应用 ADIOS 3.2.0 与 I/O 默认调度调整
+        if: inputs.use_adios && inputs.android_version == 'android16' && inputs.kernel_version == '6.12' && inputs.sub_level == '38' && inputs.os_patch_level == '2025-09'
+        working-directory: ${{ env.KERNEL_ROOT }}/common
+        run: |
+          set -euo pipefail
+          adios_fail() {
+            echo "::error::$1"
+            exit 1
+          }
+          set_config() {
+            local key="$1" value="$2"
+            if grep -q "^$key=" "$DEFCONFIG"; then
+              sed -i "s|^$key=.*|$key=$value|g" "$DEFCONFIG"
+            elif grep -q "^# $key is not set" "$DEFCONFIG"; then
+              sed -i "s|^# $key is not set|$key=$value|g" "$DEFCONFIG"
+            else
+              echo "$key=$value" >> "$DEFCONFIG"
+            fi
+          }
+          apply_optional() {
+            local patch_file="$1" marker_file="$2" marker_pattern="$3" label="$4"
+            if patch -p1 --dry-run --forward < "$patch_file" >/dev/null 2>&1; then
+              patch -p1 --no-backup-if-mismatch < "$patch_file"
+              echo "[+] $label 已应用"
+            elif grep -q "$marker_pattern" "$marker_file" 2>/dev/null; then
+              echo "[*] $label 此前已应用，跳过"
+            else
+              adios_fail "$label 补丁应用失败"
+            fi
+          }
+
+          ADIOS_PATCH="$ZZH_PATCHES/patches/adios-3.2.0-6.12.patch"
+          IO_PATCH="$ZZH_PATCHES/patches/io-sched-defaults-6.12.patch"
+          [ -f "$ADIOS_PATCH" ] || adios_fail "ADIOS 补丁不存在：$ADIOS_PATCH"
+          [ -f "$IO_PATCH" ] || adios_fail "I/O 默认调度补丁不存在：$IO_PATCH"
+
+          echo "=== 应用 ADIOS 3.2.0 + BFQ/mq-deadline 默认选择 ==="
+          apply_optional "$ADIOS_PATCH" block/Kconfig.iosched '^config MQ_IOSCHED_ADIOS' "ADIOS 3.2.0"
+          [ -f block/adios.c ] || adios_fail "ADIOS 源文件 block/adios.c 缺失"
+          # 先应用 ADIOS，再改 elevator_get_default()；保留 CONFIG_MQ_IOSCHED_DEFAULT_ADIOS 分支
+          apply_optional "$IO_PATCH" block/elevator.c 'elevator_find_get("bfq")' "BFQ/mq-deadline 默认选择"
+
+          for cfg in MQ_IOSCHED_ADIOS IOSCHED_BFQ MQ_IOSCHED_DEADLINE MQ_IOSCHED_KYBER; do
+            set_config "CONFIG_$cfg" y
+          done
+          # ADIOS 保持可选调度器，不覆盖所有设备的默认 I/O 调度器
+          if grep -q '^CONFIG_MQ_IOSCHED_DEFAULT_ADIOS=y$' "$DEFCONFIG"; then
+            sed -i 's|^CONFIG_MQ_IOSCHED_DEFAULT_ADIOS=y$|# CONFIG_MQ_IOSCHED_DEFAULT_ADIOS is not set|' "$DEFCONFIG"
+          fi
+          for cfg in MQ_IOSCHED_ADIOS IOSCHED_BFQ MQ_IOSCHED_DEADLINE; do
+            grep -q "^CONFIG_$cfg=y$" "$DEFCONFIG" || adios_fail "CONFIG_$cfg 配置写入校验失败"
+          done
+          echo "[+] ADIOS 3.2.0 与 I/O 默认调度调整已应用"
+
+      - name: 应用 accept() LIFO 顺序补丁
+        if: inputs.use_lifo_accept && inputs.android_version == 'android16' && inputs.kernel_version == '6.12' && inputs.sub_level == '38' && inputs.os_patch_level == '2025-09'
+        working-directory: ${{ env.KERNEL_ROOT }}/common
+        run: |
+          set -euo pipefail
+          lifo_fail() {
+            echo "::error::$1"
+            exit 1
+          }
+          PATCH_FILE="$ZZH_PATCHES/patches/lifo-accept-6.12.patch"
+          [ -f "$PATCH_FILE" ] || lifo_fail "LIFO accept 补丁不存在：$PATCH_FILE"
+
+          echo "=== 应用 accept() LIFO 顺序补丁 ==="
+          if patch -p1 --dry-run --forward < "$PATCH_FILE" >/dev/null 2>&1; then
+            patch -p1 --no-backup-if-mismatch < "$PATCH_FILE"
+          elif grep -q 'prepare_to_wait_exclusive_lifo' include/linux/wait.h 2>/dev/null; then
+            echo "[*] LIFO accept 补丁此前已应用，跳过"
+          else
+            lifo_fail "LIFO accept 补丁应用失败"
+          fi
+
+          grep -q 'prepare_to_wait_exclusive_lifo' kernel/sched/wait.c || lifo_fail "wait.c 缺少 LIFO 等待函数"
+          grep -q 'prepare_to_wait_exclusive_lifo(sk_sleep(sk)' net/ipv4/inet_connection_sock.c \
+            || lifo_fail "inet_connection_sock.c 未使用 LIFO 等待函数"
+          echo "[+] accept() LIFO 顺序补丁已应用"
+
+      - name: 启用 shmem/tmpfs THP ADVISE 默认
+        if: inputs.use_thp_advise && inputs.android_version == 'android16' && inputs.kernel_version == '6.12' && inputs.sub_level == '38' && inputs.os_patch_level == '2025-09'
+        working-directory: ${{ env.KERNEL_ROOT }}/common
+        run: |
+          set -euo pipefail
+          thp_fail() {
+            echo "::error::$1"
+            exit 1
+          }
+          PATCH_FILE="$ZZH_PATCHES/patches/thp-shmem-advise-6.12.patch"
+          [ -f "$PATCH_FILE" ] || thp_fail "THP ADVISE 补丁不存在：$PATCH_FILE"
+
+          echo "=== 启用 shmem/tmpfs THP ADVISE 默认 ==="
+          if patch -p1 --dry-run --forward < "$PATCH_FILE" >/dev/null 2>&1; then
+            patch -p1 --no-backup-if-mismatch < "$PATCH_FILE"
+          elif grep -q 'shmem_huge __read_mostly = SHMEM_HUGE_ADVISE' mm/shmem.c 2>/dev/null; then
+            echo "[*] THP ADVISE 补丁此前已应用，跳过"
+          else
+            thp_fail "THP ADVISE 补丁应用失败"
+          fi
+
+          grep -q 'shmem_huge __read_mostly = SHMEM_HUGE_ADVISE' mm/shmem.c \
+            || thp_fail "shmem_huge 默认值未改为 ADVISE"
+          grep -q 'ctx->huge = shmem_huge' mm/shmem.c \
+            || thp_fail "tmpfs 挂载未继承 shmem_huge 默认值"
+          echo "[+] shmem/tmpfs THP ADVISE 默认已启用"
+
       - name: 应用 Re-Kernel
         if: inputs.use_rekernel
         working-directory: ${{ env.KERNEL_ROOT }}
@@ -2054,6 +2234,34 @@ jobs:
               CONFIG_IOSCHED_BFQ CONFIG_CPU_FREQ_GOV_SCHEDUTIL; do
               require "$sym" any
             done
+          fi
+
+          # 可选调度器 / THP 补丁（仅 6.12.38-2025-09 应用，其余版本跳过）
+          if [ "$ANDROID" = "android16" ] && [ "$KERNEL" = "6.12" ] \
+            && [ "${{ inputs.sub_level }}" = "38" ] && [ "${{ inputs.os_patch_level }}" = "2025-09" ]; then
+            if [ "${{ inputs.use_bore }}" = "true" ]; then
+              require CONFIG_SCHED_BORE y
+              require CONFIG_MIN_BASE_SLICE_NS 2000000
+            fi
+            if [ "${{ inputs.use_adios }}" = "true" ]; then
+              require CONFIG_MQ_IOSCHED_ADIOS y
+              require CONFIG_IOSCHED_BFQ y
+              require CONFIG_MQ_IOSCHED_DEADLINE y
+            fi
+            if [ "${{ inputs.use_thp_advise }}" = "true" ]; then
+              require CONFIG_TRANSPARENT_HUGEPAGE y
+              require CONFIG_TRANSPARENT_HUGEPAGE_MADVISE y
+              grep -q 'shmem_huge __read_mostly = SHMEM_HUGE_ADVISE' "$KERNEL_ROOT/common/mm/shmem.c" || {
+                echo "::error::shmem THP ADVISE 补丁未生效"
+                FAIL=1
+              }
+            fi
+            if [ "${{ inputs.use_lifo_accept }}" = "true" ]; then
+              grep -q 'prepare_to_wait_exclusive_lifo(sk_sleep(sk)' "$KERNEL_ROOT/common/net/ipv4/inet_connection_sock.c" || {
+                echo "::error::LIFO accept 补丁未生效"
+                FAIL=1
+              }
+            fi
           fi
 
           # 已在 GKI defconfig 中默认启用的项：未生效时给出警告，不阻断构建
