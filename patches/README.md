@@ -18,6 +18,13 @@ combination currently verified with `patch --dry-run`.
 - BORE modifies EEVDF/fair scheduling. It does **not** replace the vendor
   EAS/energy-model or cpufreq governor. It is kept behind an opt-in switch
   because it changes task wakeup/preemption behaviour.
+- The vendored BORE patch keeps `task_struct`'s byte layout by reusing KABI
+  reserves, but genksyms still sees the new `struct bore_ctx` type and
+  changes the `module_layout` CRC, which bootloops stock-vendor devices.
+  `scripts/bore_kabi/` relocates the state to a pointer in KABI slot 8 via
+  `ANDROID_KABI_USE()` (invisible to genksyms) and adds alloc/free/NULL
+  hooks. This follows the fix on WildKernels/GKI_KernelSU_SUSFS `bore`
+  branch (commit `06488106d8ae16ba1c1303f746e6728a51d58be1`).
 - ADIOS is compiled in but is **not** made the default scheduler. The
   companion I/O tweak selects BFQ for single-queue devices and mq-deadline
   for multi-queue devices, matching CachyOS. The ADIOS-specific default

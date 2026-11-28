@@ -1674,11 +1674,35 @@ jobs:
             bore_fail "BORE 补丁应用失败"
           fi
 
+          # inline bore_ctx 会让 genksyms 把新结构体算进 task_struct 的 CRC，
+          # 即使二进制布局没变也会触发 module_layout mismatch，使 vendor UFS
+          # 等模块加载失败并 bootloop。把状态移到 KABI slot 8 的指针里，
+          # 让 __GENKSYMS__ 只看到原本的保留 u64。
+          echo "=== BORE KMI 修复：bore_ctx 移出 task_struct ==="
+          python3 "$ZZH_PATCHES/scripts/bore_kabi/bore12_state.py" include/linux/sched.h \
+            || bore_fail "BORE KMI 状态重定位失败"
+          FILES=$(grep -rl -- '->bore\.\|= &.*->bore;' include/linux/sched/bore.h kernel include \
+            2>/dev/null || true)
+          python3 "$ZZH_PATCHES/scripts/bore_kabi/bore12_flat.py" \
+            include/linux/sched/bore.h kernel/sched/bore.c kernel/sched/fair.c \
+            kernel/futex/waitwake.c kernel/fork.c $FILES \
+            || bore_fail "BORE 访问器/分配钩子改写失败"
+          if ! grep -q '^#include <linux/slab.h>' kernel/sched/bore.c; then
+            sed -i '0,/#include <linux\/cpuset.h>/s//#include <linux\/cpuset.h>\n#include <linux\/slab.h>/' kernel/sched/bore.c
+          fi
+
           grep -q '^config SCHED_BORE' init/Kconfig || bore_fail "BORE Kconfig 缺失"
           [ -f kernel/sched/bore.c ] || bore_fail "BORE 源文件 kernel/sched/bore.c 缺失"
+          grep -q 'ANDROID_KABI_USE(8, struct bore_ctx \*bore)' include/linux/sched.h \
+            || bore_fail "BORE KMI 指针未落地"
+          if grep -rnE -- '->bore\.' include/linux/sched/bore.h kernel/sched kernel/fork.c kernel/futex; then
+            bore_fail "仍有未改写的 ->bore. 访问器"
+          fi
+          grep -q 'p->bore = NULL;' kernel/fork.c || bore_fail "BORE fork 早期 NULL 钩子缺失"
+          grep -q 'kfree(tsk->bore);' kernel/fork.c || bore_fail "BORE 释放钩子缺失"
           set_config CONFIG_SCHED_BORE y
           grep -q '^CONFIG_SCHED_BORE=y$' "$DEFCONFIG" || bore_fail "BORE 配置写入校验失败"
-          echo "[+] BORE 7.0.0 已应用"
+          echo "[+] BORE 7.0.0 已应用（KMI 兼容）"
 
       - name: 应用 ADIOS 3.2.0 与 I/O 默认调度调整
         if: inputs.use_adios && inputs.android_version == 'android16' && inputs.kernel_version == '6.12' && inputs.sub_level == '38' && inputs.os_patch_level == '2025-09'
@@ -2242,6 +2266,11 @@ jobs:
             if [ "${{ inputs.use_bore }}" = "true" ]; then
               require CONFIG_SCHED_BORE y
               require CONFIG_MIN_BASE_SLICE_NS 2000000
+              grep -q 'ANDROID_KABI_USE(8, struct bore_ctx \*bore)' \
+                "$KERNEL_ROOT/common/include/linux/sched.h" || {
+                echo "::error::BORE KMI 重定位未生效，可能再次触发 module_layout mismatch"
+                FAIL=1
+              }
             fi
             if [ "${{ inputs.use_adios }}" = "true" ]; then
               require CONFIG_MQ_IOSCHED_ADIOS y
